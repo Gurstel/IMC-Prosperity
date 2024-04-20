@@ -51,13 +51,7 @@ class Observation:
         self.conversionObservations = conversionObservations
 
     def __str__(self) -> str:
-        return (
-            "(plainValueObservations: "
-            + jsonpickle.encode(self.plainValueObservations)
-            + ", conversionObservations: "
-            + jsonpickle.encode(self.conversionObservations)
-            + ")"
-        )
+        return "(plainValueObservations: " + jsonpickle.encode(self.plainValueObservations) + ", conversionObservations: " + jsonpickle.encode(self.conversionObservations) + ")"
 
 
 class Order:
@@ -68,14 +62,10 @@ class Order:
         self.quantity = quantity
 
     def __str__(self) -> str:
-        return (
-            "(" + self.symbol + ", " + str(self.price) + ", " + str(self.quantity) + ")"
-        )
+        return "(" + self.symbol + ", " + str(self.price) + ", " + str(self.quantity) + ")"
 
     def __repr__(self) -> str:
-        return (
-            "(" + self.symbol + ", " + str(self.price) + ", " + str(self.quantity) + ")"
-        )
+        return "(" + self.symbol + ", " + str(self.price) + ", " + str(self.quantity) + ")"
 
 
 class OrderDepth:
@@ -104,38 +94,10 @@ class Trade:
         self.timestamp = timestamp
 
     def __str__(self) -> str:
-        return (
-            "("
-            + self.symbol
-            + ", "
-            + self.buyer
-            + " << "
-            + self.seller
-            + ", "
-            + str(self.price)
-            + ", "
-            + str(self.quantity)
-            + ", "
-            + str(self.timestamp)
-            + ")"
-        )
+        return "(" + self.symbol + ", " + self.buyer + " << " + self.seller + ", " + str(self.price) + ", " + str(self.quantity) + ", " + str(self.timestamp) + ")"
 
     def __repr__(self) -> str:
-        return (
-            "("
-            + self.symbol
-            + ", "
-            + self.buyer
-            + " << "
-            + self.seller
-            + ", "
-            + str(self.price)
-            + ", "
-            + str(self.quantity)
-            + ", "
-            + str(self.timestamp)
-            + ")"
-        )
+        return "(" + self.symbol + ", " + self.buyer + " << " + self.seller + ", " + str(self.price) + ", " + str(self.quantity) + ", " + str(self.timestamp) + ")"
 
 
 class TradingState(object):
