@@ -390,13 +390,11 @@ class Trader:
         self.conversions = 0
         for product in ["AMETHYSTS", "STARFRUIT", "ORCHIDS", "GIFT_BASKET", COCONUT]:
             if product == "ORCHIDS":
-                continue
                 orders: List[Order] = []
                 self.trade_orchids(state, orders)
                 print("ORCHIDS orders", orders)
                 result[product] = orders
             elif product in ["AMETHYSTS", "STARFRUIT"]:
-                continue
                 self.buys = 0
                 self.sells = 0
                 orders: List[Order] = []
@@ -436,7 +434,6 @@ class Trader:
                             logger.print("Undercutting sell order", product, undercut_sell_price, max_sell_quantity)
                 result[product] = orders
             elif product == "GIFT_BASKET":
-                continue
                 orders: List[Order] = []
                 self.trade_baskets(state, orders)
                 result["GIFT_BASKET"] = [o for o in orders if o.symbol == "GIFT_BASKET"]
@@ -499,13 +496,13 @@ class Trader:
                     coupon_price = b
 
             coupon_trade_qty = max(coupon_trade_qty, -POSITION_LIMITS[COUPON] - coupon_position)
-            new_coupon_position = coupon_position + coupon_trade_qty
+            new_coupon_position = coupon_position + coupon_trade_qty  # -592
 
-            desired_coconut_position = int(round(-new_coupon_position * coupon_delta))
-            coconut_trade_qty = desired_coconut_position - coconut_position
+            desired_coconut_position = int(round(-new_coupon_position * coupon_delta))  # 322
+            coconut_trade_qty = desired_coconut_position - coconut_position  # 23
             if desired_coconut_position > POSITION_LIMITS[COCONUT] or coconut_trade_qty > -available_coconut_ask_qty:
                 coconut_trade_qty = min(POSITION_LIMITS[COCONUT] - coconut_position, -available_coconut_ask_qty)
-                coupon_trade_qty = int(round(-(coconut_trade_qty / coupon_delta) - coupon_position))
+                coupon_trade_qty = int(round(-(coconut_trade_qty / coupon_delta)))
 
         elif (best_coupon_ask - expected_coupon_price) / expected_coupon_price < -TRADE_PERCENT_THRESHOLD:
             # Buy COUPON
@@ -521,7 +518,9 @@ class Trader:
             coconut_trade_qty = desired_coconut_position - coconut_position
             if desired_coconut_position < -POSITION_LIMITS[COCONUT] or coconut_trade_qty < -available_coconut_bid_qty:
                 coconut_trade_qty = max(-POSITION_LIMITS[COCONUT] - coconut_position, -available_coconut_bid_qty)
-                coupon_trade_qty = int(round(-(coconut_trade_qty / coupon_delta) - coupon_position))
+                coupon_trade_qty = int(round(-(coconut_trade_qty / coupon_delta)))
+        else:
+            logger.print("No trade")
 
         orders.append(Order(COUPON, coupon_price, coupon_trade_qty))
         if coconut_trade_qty >= 0:
