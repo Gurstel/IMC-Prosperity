@@ -1,25 +1,36 @@
-from typing import Dict, List
 from datamodel import OrderDepth, TradingState, Order
-import collections
-from collections import defaultdict
-import random
-import math
-import copy
-import numpy as np
+from typing import List
 import json
-from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+from datamodel import (
+    Listing,
+    Observation,
+    Order,
+    OrderDepth,
+    ProsperityEncoder,
+    Symbol,
+    Trade,
+    TradingState,
+)
 from typing import Any
+import numpy as np
+import math
 
 
 class Logger:
     def __init__(self) -> None:
         self.logs = ""
-        self.max_log_length = 3750
+        self.max_log_length = 100000
 
     def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
         self.logs += sep.join(map(str, objects)) + end
 
-    def flush(self, state: TradingState, orders: dict[Symbol, list[Order]], conversions: int, trader_data: str) -> None:
+    def flush(
+        self,
+        state: TradingState,
+        orders: dict[Symbol, list[Order]],
+        conversions: int,
+        trader_data: str,
+    ) -> None:
         base_length = len(
             self.to_json(
                 [
@@ -38,7 +49,9 @@ class Logger:
         print(
             self.to_json(
                 [
-                    self.compress_state(state, self.truncate(state.traderData, max_item_length)),
+                    self.compress_state(
+                        state, self.truncate(state.traderData, max_item_length)
+                    ),
                     self.compress_orders(orders),
                     conversions,
                     self.truncate(trader_data, max_item_length),
@@ -64,11 +77,15 @@ class Logger:
     def compress_listings(self, listings: dict[Symbol, Listing]) -> list[list[Any]]:
         compressed = []
         for listing in listings.values():
-            compressed.append([listing["symbol"], listing["product"], listing["denomination"]])
+            compressed.append(
+                [listing["symbol"], listing["product"], listing["denomination"]]
+            )
 
         return compressed
 
-    def compress_order_depths(self, order_depths: dict[Symbol, OrderDepth]) -> dict[Symbol, list[Any]]:
+    def compress_order_depths(
+        self, order_depths: dict[Symbol, OrderDepth]
+    ) -> dict[Symbol, list[Any]]:
         compressed = {}
         for symbol, order_depth in order_depths.items():
             compressed[symbol] = [order_depth.buy_orders, order_depth.sell_orders]
@@ -131,10 +148,10 @@ ROSES = "ROSES"
 GIFT_BASKET = "GIFT_BASKET"
 
 POSITION_LIMITS = {
-    CHOCOLATE: 250,
-    STRAWBERRIES: 350,
-    ROSES: 60,
-    GIFT_BASKET: 60,
+    CHOCOLATE: 232,
+    STRAWBERRIES: 348,
+    ROSES: 58,
+    GIFT_BASKET: 58,
 }
 
 GIFT_BASKET_CONTENTS = {
@@ -143,258 +160,232 @@ GIFT_BASKET_CONTENTS = {
     ROSES: 1,
 }
 
+PRICE_OFFSET = 100
+PERCENT_THRESHOLD = 0.14
+ORDER_SLOWING_FACTOR = 2
+
 logger = Logger()
 
 
 class Trader:
+    def computeMidPrice(self, state: TradingState, product: str, use_best: bool = True):
+        i = -1
+        if use_best:
+            i = 0
+        return int(
+            np.round(
+                (
+                    list(state.order_depths[product].buy_orders.items())[i][0]
+                    + list(state.order_depths[product].sell_orders.items())[i][0]
+                )
+                / 2
+            )
+        )
 
-    def buyIndividualItem(self, product: str, asks: List[tuple]):
-        amount_to_buy = 0
-        highest_ask = 0
-        total_price = 0
-        while amount_to_buy < GIFT_BASKET_CONTENTS[product]:
-            if len(asks) <= 0:
-                return (False, 0, 0, 0)
+    def computeGiftBasketPremium(self, state: TradingState, use_best=True):
+        giftBasketMidPrice = self.computeMidPrice(state, GIFT_BASKET, use_best)
+        chocolateMidPrice = self.computeMidPrice(state, CHOCOLATE, use_best)
+        strawberryMidPrice = self.computeMidPrice(state, STRAWBERRIES, use_best)
+        roseMidPrice = self.computeMidPrice(state, ROSES, use_best)
+        return giftBasketMidPrice - (
+            chocolateMidPrice * GIFT_BASKET_CONTENTS[CHOCOLATE]
+            + strawberryMidPrice * GIFT_BASKET_CONTENTS[STRAWBERRIES]
+            + roseMidPrice * GIFT_BASKET_CONTENTS[ROSES]
+        )
 
-            remaining_amount_to_buy = GIFT_BASKET_CONTENTS[product] - amount_to_buy
-            ask, ask_amount = asks[0]
-            ask_amount = -ask_amount
+    def maxGiftBasketsToBuy(self, state: TradingState):
+        gift_baskets_for_sale = sum(
+            -ask_amount
+            for _, ask_amount in list(
+                state.order_depths[GIFT_BASKET].sell_orders.items()
+            )
+        )
 
-            amount_to_buy_in_lot = min(ask_amount, remaining_amount_to_buy)
+        strawberris_for_buy = sum(
+            bid_amount
+            for _, bid_amount in list(
+                state.order_depths[STRAWBERRIES].buy_orders.items()
+            )
+        )
+        chocolates_for_buy = sum(
+            bid_amount
+            for _, bid_amount in list(state.order_depths[CHOCOLATE].buy_orders.items())
+        )
+        roses_for_buy = sum(
+            bid_amount
+            for _, bid_amount in list(state.order_depths[ROSES].buy_orders.items())
+        )
 
-            total_price += amount_to_buy_in_lot * ask
-            amount_to_buy += amount_to_buy_in_lot
-            highest_ask = ask
+        return math.floor(
+            min(
+                gift_baskets_for_sale,
+                strawberris_for_buy / GIFT_BASKET_CONTENTS[STRAWBERRIES],
+                chocolates_for_buy / GIFT_BASKET_CONTENTS[CHOCOLATE],
+                roses_for_buy / GIFT_BASKET_CONTENTS[ROSES],
+            )
+        )
 
-            if ask_amount - amount_to_buy_in_lot == 0:
-                asks.pop(0)
-            else:
-                asks[0] = (ask, -ask_amount + amount_to_buy_in_lot)
+    def maxGiftBasketsToSell(self, state: TradingState):
+        gift_baskets_for_buy = sum(
+            bid_amount
+            for _, bid_amount in list(
+                state.order_depths[GIFT_BASKET].buy_orders.items()
+            )
+        )
 
-        if amount_to_buy < GIFT_BASKET_CONTENTS[product]:
-            return (False, 0, 0, 0)
+        strawberris_for_sale = sum(
+            -ask_amount
+            for _, ask_amount in list(
+                state.order_depths[STRAWBERRIES].sell_orders.items()
+            )
+        )
+        chocolates_for_sale = sum(
+            -ask_amount
+            for _, ask_amount in list(state.order_depths[CHOCOLATE].sell_orders.items())
+        )
+        roses_for_sale = sum(
+            -ask_amount
+            for _, ask_amount in list(state.order_depths[ROSES].sell_orders.items())
+        )
 
-        return (True, amount_to_buy, highest_ask, total_price)
+        return math.floor(
+            min(
+                gift_baskets_for_buy,
+                strawberris_for_sale / GIFT_BASKET_CONTENTS[STRAWBERRIES],
+                chocolates_for_sale / GIFT_BASKET_CONTENTS[CHOCOLATE],
+                roses_for_sale / GIFT_BASKET_CONTENTS[ROSES],
+            )
+        )
 
-    def sellIndividualItem(self, product: str, bids: List[tuple]):
-        amount_to_sell = 0
-        highest_bid = 0
-        total_price = 0
-        while amount_to_sell < GIFT_BASKET_CONTENTS[product]:
-            if len(bids) <= 0:
-                return (False, 0, 0, 0)
+    def createOrdersForGiftBasketTrade(
+        self, state: TradingState, num_gift_baskets: int
+    ):
+        if num_gift_baskets == 0:
+            return {}
 
-            remaining_amount_to_buy = GIFT_BASKET_CONTENTS[product] - amount_to_sell
-            bid, bid_amount = bids[0]
+        if num_gift_baskets > 0:
+            # Buying Gift Baskets
+            max_gift_baskets_to_buy = self.maxGiftBasketsToBuy(state)
+            quantity = min(num_gift_baskets, max_gift_baskets_to_buy)
+            quantity = max(1, int(quantity / ORDER_SLOWING_FACTOR))
+            logger.print(
+                f"Buying {num_gift_baskets} gift baskets: qty={quantity}, price={self.computeMidPrice(state, GIFT_BASKET) + PRICE_OFFSET}"
+            )
 
-            amount_to_buy_in_lot = min(bid_amount, remaining_amount_to_buy)
+            return {
+                GIFT_BASKET: Order(
+                    GIFT_BASKET,
+                    self.computeMidPrice(state, GIFT_BASKET) + PRICE_OFFSET,
+                    quantity,
+                ),
+                STRAWBERRIES: Order(
+                    STRAWBERRIES,
+                    self.computeMidPrice(state, STRAWBERRIES) - PRICE_OFFSET,
+                    -GIFT_BASKET_CONTENTS[STRAWBERRIES] * quantity,
+                ),
+                CHOCOLATE: Order(
+                    CHOCOLATE,
+                    self.computeMidPrice(state, CHOCOLATE) - PRICE_OFFSET,
+                    -GIFT_BASKET_CONTENTS[CHOCOLATE] * quantity,
+                ),
+                ROSES: Order(
+                    ROSES,
+                    self.computeMidPrice(state, ROSES) - PRICE_OFFSET,
+                    -GIFT_BASKET_CONTENTS[ROSES] * quantity,
+                ),
+            }
 
-            total_price += amount_to_buy_in_lot * bid
-            amount_to_sell += amount_to_buy_in_lot
-            highest_bid = bid
-
-            if bid_amount - amount_to_buy_in_lot == 0:
-                bids.pop(0)
-            else:
-                bids[0] = (bid, bid_amount - amount_to_buy_in_lot)
-
-        if amount_to_sell < GIFT_BASKET_CONTENTS[product]:
-            return (False, 0, 0, 0)
-
-        return (True, amount_to_sell, highest_bid, total_price)
+        # Selling Gift Baskets
+        max_gift_baskets_to_sell = self.maxGiftBasketsToSell(state)
+        quantity = min(-num_gift_baskets, max_gift_baskets_to_sell)
+        quantity = max(1, int(quantity / ORDER_SLOWING_FACTOR))
+        logger.print(
+            f"Selling {num_gift_baskets} gift baskets: qty={quantity}, price={self.computeMidPrice(state, GIFT_BASKET) - PRICE_OFFSET}"
+        )
+        return {
+            GIFT_BASKET: Order(
+                GIFT_BASKET,
+                self.computeMidPrice(state, GIFT_BASKET) - PRICE_OFFSET,
+                -quantity,
+            ),
+            STRAWBERRIES: Order(
+                STRAWBERRIES,
+                self.computeMidPrice(state, STRAWBERRIES) + PRICE_OFFSET,
+                GIFT_BASKET_CONTENTS[STRAWBERRIES] * quantity,
+            ),
+            CHOCOLATE: Order(
+                CHOCOLATE,
+                self.computeMidPrice(state, CHOCOLATE) + PRICE_OFFSET,
+                GIFT_BASKET_CONTENTS[CHOCOLATE] * quantity,
+            ),
+            ROSES: Order(
+                ROSES,
+                self.computeMidPrice(state, ROSES) + PRICE_OFFSET,
+                GIFT_BASKET_CONTENTS[ROSES] * quantity,
+            ),
+        }
 
     def run(self, state: TradingState):
-        avg_gift_basket_premium = 379
-        percent_threshold = 0.16
-
         result = {}
 
-        # Sell baskets and buy strawberries, chocolate, and roses
-        gift_basket_bids = list(state.order_depths[GIFT_BASKET].buy_orders.items())
-        strawberry_asks = list(state.order_depths[STRAWBERRIES].sell_orders.items())
-        chocolate_asks = list(state.order_depths[CHOCOLATE].sell_orders.items())
-        rose_asks = list(state.order_depths[ROSES].sell_orders.items())
+        prev_trader_data = json.loads(state.traderData) if state.traderData else {}
+        prev_avg_gift_basket_premium = prev_trader_data.get(
+            "avg_gift_basket_premium", 379
+        )
+        prev_count = prev_trader_data.get("count", 1000)
 
-        done = False
-        for gift_basket_bid, gift_basket_bid_amount in gift_basket_bids:
-            if done:
-                break
+        gift_basket_pos = state.position.get(GIFT_BASKET, 0)
+        real_premium = self.computeGiftBasketPremium(state)
 
-            for i in range(gift_basket_bid_amount):
-                if (
-                    (GIFT_BASKET in state.position and state.position[GIFT_BASKET] < -POSITION_LIMITS[GIFT_BASKET] + 1)
-                    and (STRAWBERRIES in state.position and state.position[STRAWBERRIES] > POSITION_LIMITS[STRAWBERRIES] - GIFT_BASKET_CONTENTS[STRAWBERRIES])
-                    and (CHOCOLATE in state.position and state.position[CHOCOLATE] > POSITION_LIMITS[CHOCOLATE] - GIFT_BASKET_CONTENTS[CHOCOLATE])
-                    and (ROSES in state.position and state.position[ROSES] > POSITION_LIMITS[ROSES] - GIFT_BASKET_CONTENTS[ROSES])
-                ):
-                    done = True
-                    break
+        orders = {}
+        if prev_avg_gift_basket_premium is not None:
+            pct_change = (
+                real_premium - prev_avg_gift_basket_premium
+            ) / prev_avg_gift_basket_premium
+            logger.print(
+                f"Real premium: {real_premium}, avg premium: {prev_avg_gift_basket_premium}, pct_change: {pct_change}"
+            )
 
-                (
-                    can_buy_strawberries,
-                    strawberries_amount_to_buy,
-                    strawberries_highest_ask,
-                    strawberries_total_price,
-                ) = self.buyIndividualItem(STRAWBERRIES, strawberry_asks)
-                if not can_buy_strawberries:
-                    done = True
-                    break
-
-                (
-                    can_buy_chocolates,
-                    chocolates_amount_to_buy,
-                    chocolates_highest_ask,
-                    chocolates_total_price,
-                ) = self.buyIndividualItem(CHOCOLATE, chocolate_asks)
-                if not can_buy_chocolates:
-                    done = True
-                    break
-
-                (
-                    can_buy_roses,
-                    roses_amount_to_buy,
-                    roses_highest_ask,
-                    roses_total_price,
-                ) = self.buyIndividualItem(ROSES, rose_asks)
-                if not can_buy_roses:
-                    done = True
-                    break
-
-                # print("should sell basket?")
-                # print(f"gift_basket_bid: {gift_basket_bid}")
-                # print(
-                #     f"individual_total_price: {strawberries_total_price + chocolates_total_price + roses_total_price}"
-                # )
-                # print(
-                #     f"real premium: {gift_basket_bid - (strawberries_total_price + chocolates_total_price + roses_total_price)}"
-                # )
-                # print(f"avg premium: {avg_gift_basket_premium}")
-                # print("\n\n")
-                real_premium = gift_basket_bid - (strawberries_total_price + chocolates_total_price + roses_total_price)
-                if (real_premium - avg_gift_basket_premium) / avg_gift_basket_premium <= percent_threshold:
-                    done = True
-                    break
-
-                print("selling basket")
-                print("real premium: ", real_premium)
-                print("avg premium: ", avg_gift_basket_premium)
-                print("\n\n")
-
-                if GIFT_BASKET not in result:
-                    result[GIFT_BASKET] = []
-                result[GIFT_BASKET].append(Order(GIFT_BASKET, gift_basket_bid, -1))
-
-                if STRAWBERRIES not in result:
-                    result[STRAWBERRIES] = []
-                result[STRAWBERRIES].append(
-                    Order(
-                        STRAWBERRIES,
-                        strawberries_highest_ask,
-                        strawberries_amount_to_buy,
-                    )
+            if pct_change > PERCENT_THRESHOLD:
+                # Sell as many as possible
+                logger.print("Sell as many as possible")
+                orders = self.createOrdersForGiftBasketTrade(
+                    state, -POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos
+                )
+            elif pct_change < -PERCENT_THRESHOLD:
+                # Buy as many as possible
+                logger.print("Buy as many as possible")
+                orders = self.createOrdersForGiftBasketTrade(
+                    state, POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos
                 )
 
-                if CHOCOLATE not in result:
-                    result[CHOCOLATE] = []
-                result[CHOCOLATE].append(Order(CHOCOLATE, chocolates_highest_ask, chocolates_amount_to_buy))
+        if orders.get(GIFT_BASKET):
+            result[GIFT_BASKET] = [orders[GIFT_BASKET]]
+        if orders.get(STRAWBERRIES):
+            result[STRAWBERRIES] = [orders[STRAWBERRIES]]
+        if orders.get(CHOCOLATE):
+            result[CHOCOLATE] = [orders[CHOCOLATE]]
+        if orders.get(ROSES):
+            result[ROSES] = [orders[ROSES]]
 
-                if ROSES not in result:
-                    result[ROSES] = []
-                result[ROSES].append(Order(ROSES, roses_highest_ask, roses_amount_to_buy))
+        new_count = prev_count + 1
+        new_avg_gift_basket_premium = (
+            prev_avg_gift_basket_premium
+            if prev_avg_gift_basket_premium is not None
+            else 0
+        )
+        new_avg_gift_basket_premium = (
+            (new_avg_gift_basket_premium * prev_count) + real_premium
+        ) / new_count
 
-        # Buy baskets and sell strawberries, chocolate, and roses
-        gift_basket_asks = list(state.order_depths[GIFT_BASKET].sell_orders.items())
-        strawberry_bids = list(state.order_depths[STRAWBERRIES].buy_orders.items())
-        chocolate_bids = list(state.order_depths[CHOCOLATE].buy_orders.items())
-        rose_bids = list(state.order_depths[ROSES].buy_orders.items())
-
-        done = False
-        for gift_basket_ask, gift_basket_ask_amount in gift_basket_asks:
-            if done:
-                break
-
-            for i in range(-gift_basket_ask_amount):
-                if (
-                    (GIFT_BASKET in state.position and state.position[GIFT_BASKET] > POSITION_LIMITS[GIFT_BASKET] - 1)
-                    and (STRAWBERRIES in state.position and state.position[STRAWBERRIES] < -POSITION_LIMITS[STRAWBERRIES] + GIFT_BASKET_CONTENTS[STRAWBERRIES])
-                    and (CHOCOLATE in state.position and state.position[CHOCOLATE] < -POSITION_LIMITS[CHOCOLATE] + GIFT_BASKET_CONTENTS[CHOCOLATE])
-                    and (ROSES in state.position and state.position[ROSES] < -POSITION_LIMITS[ROSES] + GIFT_BASKET_CONTENTS[ROSES])
-                ):
-                    done = True
-                    break
-
-                (
-                    can_sell_strawberries,
-                    strawberries_amount_to_sell,
-                    strawberries_lowest_bid,
-                    strawberries_total_price,
-                ) = self.sellIndividualItem(STRAWBERRIES, strawberry_bids)
-                if not can_sell_strawberries:
-                    done = True
-                    break
-
-                (
-                    can_sell_chocolates,
-                    chocolates_amount_to_sell,
-                    chocolates_lowest_bid,
-                    chocolates_total_price,
-                ) = self.sellIndividualItem(CHOCOLATE, chocolate_bids)
-                if not can_sell_chocolates:
-                    done = True
-                    break
-
-                (
-                    can_sell_roses,
-                    roses_amount_to_sell,
-                    roses_lowest_bid,
-                    roses_total_price,
-                ) = self.sellIndividualItem(ROSES, rose_bids)
-                if not can_sell_roses:
-                    done = True
-                    break
-
-                # print("should buy basket?")
-                # print(f"gift_basket_ask: {gift_basket_ask}")
-                # print(
-                #     f"individual_total_price: {strawberries_total_price + chocolates_total_price + roses_total_price}"
-                # )
-                # print(
-                #     f"real premium: {gift_basket_ask - (strawberries_total_price + chocolates_total_price + roses_total_price)}"
-                # )
-                # print(f"avg premium: {avg_gift_basket_premium}")
-                # print("\n\n")
-                real_premium = gift_basket_ask - (strawberries_total_price + chocolates_total_price + roses_total_price)
-                if (real_premium - avg_gift_basket_premium) / avg_gift_basket_premium >= -percent_threshold:
-                    done = True
-                    break
-
-                print("buying basket")
-                print("real premium: ", real_premium)
-                print("avg premium: ", avg_gift_basket_premium)
-                print("\n\n")
-                if GIFT_BASKET not in result:
-                    result[GIFT_BASKET] = []
-                result[GIFT_BASKET].append(Order(GIFT_BASKET, gift_basket_ask, 1))
-
-                if STRAWBERRIES not in result:
-                    result[STRAWBERRIES] = []
-                result[STRAWBERRIES].append(
-                    Order(
-                        STRAWBERRIES,
-                        strawberries_lowest_bid,
-                        -strawberries_amount_to_sell,
-                    )
-                )
-
-                if CHOCOLATE not in result:
-                    result[CHOCOLATE] = []
-                result[CHOCOLATE].append(Order(CHOCOLATE, chocolates_lowest_bid, -chocolates_amount_to_sell))
-
-                if ROSES not in result:
-                    result[ROSES] = []
-                result[ROSES].append(Order(ROSES, roses_lowest_bid, -roses_amount_to_sell))
-
-        trader_data = "SAMPLE"  # String value holding Trader state data required. It will be delivered as TradingState.traderData on next execution.
+        new_trader_data = {
+            "avg_gift_basket_premium": new_avg_gift_basket_premium,
+            "count": new_count,
+            "real_premium": real_premium,
+        }
+        trader_data = json.dumps(
+            new_trader_data
+        )  # String value holding Trader state data required. It will be delivered as TradingState.traderData on next execution.
         conversions = 0
 
         logger.flush(state, result, conversions, trader_data)
