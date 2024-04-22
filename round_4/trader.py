@@ -288,9 +288,7 @@ class Logger:
         print(
             self.to_json(
                 [
-                    self.compress_state(
-                        state, self.truncate(state.traderData, max_item_length)
-                    ),
+                    self.compress_state(state, self.truncate(state.traderData, max_item_length)),
                     self.compress_orders(orders),
                     conversions,
                     self.truncate(trader_data, max_item_length),
@@ -316,15 +314,11 @@ class Logger:
     def compress_listings(self, listings: dict[Symbol, Listing]) -> list[list[Any]]:
         compressed = []
         for listing in listings.values():
-            compressed.append(
-                [listing["symbol"], listing["product"], listing["denomination"]]
-            )
+            compressed.append([listing["symbol"], listing["product"], listing["denomination"]])
 
         return compressed
 
-    def compress_order_depths(
-        self, order_depths: dict[Symbol, OrderDepth]
-    ) -> dict[Symbol, list[Any]]:
+    def compress_order_depths(self, order_depths: dict[Symbol, OrderDepth]) -> dict[Symbol, list[Any]]:
         compressed = {}
         for symbol, order_depth in order_depths.items():
             compressed[symbol] = [order_depth.buy_orders, order_depth.sell_orders]
@@ -395,24 +389,28 @@ POSITION_LIMITS = {
     STRAWBERRIES: 348,
     ROSES: 58,
     GIFT_BASKET: 58,
+    COCONUT: 300,
+    COUPON: 600,
 }
 
 GIFT_BASKET_CONTENTS = {
     CHOCOLATE: 4,
     STRAWBERRIES: 6,
     ROSES: 1,
-    COCONUT: 300,
-    COUPON: 600,
 }
 
 BASKET_PRICE_OFFSET = 100
-BASKET_PRICE_PERCENT_THRESHOLD = 0.14
-BASKET_ORDER_SLOWING_FACTOR = 2
+BASKET_PRICE_PERCENT_THRESHOLD = 0.155
+BASKET_PRICE_STD_THRESHOLD = 1
+BASKET_ORDER_SLOWING_FACTOR = 8
+BASKET_PREMIUM_AVG = 370.2881375
+BASKET_PREMIUM_STD = 79.40082671366315
+BASKET_PREMIUM_WINDOW_SIZE = 10000
 
 COCONUT_FMV = 10000
 COUPON_FMV = 637.63
 COUPON_LOADING = 2
-COUPON_PRICE_TRADE_PERCENT_THRESHOLD = 0.0
+COUPON_PRICE_TRADE_PERCENT_THRESHOLD = 0.004
 
 
 class Trader:
@@ -421,39 +419,41 @@ class Trader:
         self.buys = 0
         self.sells = 0
 
+    def get_buy_orders(self, state: TradingState, product: str):
+        if product not in state.order_depths:
+            return {}
+
+        return state.order_depths[product].buy_orders
+
+    def get_sell_orders(self, state: TradingState, product: str):
+        if product not in state.order_depths:
+            return {}
+
+        return state.order_depths[product].sell_orders
+
     def get_best_bid(self, state: TradingState, product: str):
-        if not state.order_depths[product].buy_orders:
+        buy_orders = self.get_buy_orders(state, product)
+        if not buy_orders:
             return 0, 0
 
-        best_bid = max(state.order_depths[product].buy_orders.keys())
-        return best_bid, state.order_depths[product].buy_orders[best_bid]
+        best_bid = max(buy_orders.keys())
+        return best_bid, buy_orders[best_bid]
 
     def get_best_ask(self, state: TradingState, product: str):
-        if not state.order_depths[product].sell_orders:
+        sell_orders = self.get_sell_orders(state, product)
+        if not sell_orders:
             return 999999, 0
 
-        best_ask = min(state.order_depths[product].sell_orders.keys())
-        return best_ask, state.order_depths[product].sell_orders[best_ask]
+        best_ask = min(sell_orders.keys())
+        return best_ask, sell_orders[best_ask]
 
     def compute_mid_price(self, state: TradingState, product: str):
-        return int(
-            np.round(
-                (
-                    self.get_best_ask(state, product)[0]
-                    + self.get_best_bid(state, product)[0]
-                )
-                / 2
-            )
-        )
+        return int(np.round((self.get_best_ask(state, product)[0] + self.get_best_bid(state, product)[0]) / 2))
 
     def compute_max_coupon_buy_qty(self, state: TradingState):
         # Max quantity of COUPON that can be bought
         best_coupon_ask, _ = self.get_best_ask(state, COUPON)
-        available_coupon_ask_qty = sum(
-            q
-            for a, q in state.order_depths[COUPON].sell_orders.items()
-            if a <= best_coupon_ask + 2
-        )
+        available_coupon_ask_qty = sum(q for a, q in self.get_sell_orders(state, COUPON).items() if a <= best_coupon_ask + 2)
         return math.floor(
             min(
                 [
@@ -466,11 +466,7 @@ class Trader:
     def compute_min_coupon_sell_qty(self, state: TradingState):
         # Min quantity of COUPON that can be sold
         best_coupon_bid, _ = self.get_best_bid(state, COUPON)
-        available_coupon_bid_qty = sum(
-            q
-            for a, q in state.order_depths[COUPON].buy_orders.items()
-            if a >= best_coupon_bid - 2
-        )
+        available_coupon_bid_qty = sum(q for a, q in self.get_buy_orders(state, COUPON).items() if a >= best_coupon_bid - 2)
         return math.ceil(
             max(
                 [
@@ -489,17 +485,17 @@ class Trader:
             if product == "ORCHIDS":
                 orders: List[Order] = []
                 self.trade_orchids(state, orders)
-                print("ORCHIDS orders", orders)
                 result[product] = orders
             elif product in ["AMETHYSTS", "STARFRUIT"]:
                 self.buys = 0
                 self.sells = 0
                 orders: List[Order] = []
-                order_depth: OrderDepth = state.order_depths[product]
+                order_depth: OrderDepth = state.order_depths.get(product)
+                if order_depth is None:
+                    continue
+
                 current_position = state.position.get(product, 0)
-                logger.print(
-                    "Processing", product, "with current position", current_position
-                )
+                logger.print("Processing", product, "with current position", current_position)
                 position_limit = 20  # Maximum allowable position (both long and short)
                 if product == "AMETHYSTS":
                     midpoint = 10000  # Fixed midpoint for AMETHYSTS
@@ -511,16 +507,9 @@ class Trader:
                         position_limit,
                         product,
                     )
-                    self.process_neutral_trades(
-                        order_depth, product, orders, midpoint, current_position
-                    )
+                    self.process_neutral_trades(order_depth, product, orders, midpoint, current_position)
                 elif product == "STARFRUIT":
-                    midpoint = int(
-                        math.ceil(
-                            (max(order_depth.sell_orders) + min(order_depth.buy_orders))
-                            / 2
-                        )
-                    )
+                    midpoint = int(math.ceil((max(order_depth.sell_orders) + min(order_depth.buy_orders)) / 2))
                     logger.print("STARFRUIT midpoint", midpoint)
                     self.process_market_trades(
                         order_depth,
@@ -530,24 +519,14 @@ class Trader:
                         position_limit,
                         product,
                     )
-                    self.process_neutral_trades(
-                        order_depth, product, orders, midpoint, current_position
-                    )
+                    self.process_neutral_trades(order_depth, product, orders, midpoint, current_position)
                 # Undercutting strategy: finding the next best buy and sell orders to undercut
                 next_sell_order = next(
-                    (
-                        price
-                        for price in sorted(order_depth.sell_orders)
-                        if price > midpoint
-                    ),
+                    (price for price in sorted(order_depth.sell_orders) if price > midpoint),
                     None,
                 )
                 next_buy_order = next(
-                    (
-                        price
-                        for price in sorted(order_depth.buy_orders, reverse=True)
-                        if price < midpoint
-                    ),
+                    (price for price in sorted(order_depth.buy_orders, reverse=True) if price < midpoint),
                     None,
                 )
 
@@ -557,9 +536,7 @@ class Trader:
                     if current_position <= position_limit:
                         max_buy_quantity = position_limit - current_position - self.buys
                         if max_buy_quantity > 0:
-                            orders.append(
-                                Order(product, undercut_buy_price, max_buy_quantity)
-                            )
+                            orders.append(Order(product, undercut_buy_price, max_buy_quantity))
                             logger.print(
                                 "Undercutting buy order",
                                 product,
@@ -570,9 +547,7 @@ class Trader:
                 if next_sell_order:
                     undercut_sell_price = next_sell_order - 1
                     if current_position >= -position_limit:
-                        max_sell_quantity = (
-                            -position_limit - current_position + self.sells
-                        )
+                        max_sell_quantity = -position_limit - current_position + self.sells
                         logger.print(
                             "Sells during market making",
                             self.sells,
@@ -580,9 +555,7 @@ class Trader:
                             self.buys,
                         )
                         if max_sell_quantity < 0:
-                            orders.append(
-                                Order(product, undercut_sell_price, max_sell_quantity)
-                            )
+                            orders.append(Order(product, undercut_sell_price, max_sell_quantity))
                             logger.print(
                                 "Undercutting sell order",
                                 product,
@@ -590,14 +563,14 @@ class Trader:
                                 max_sell_quantity,
                             )
                 result[product] = orders
-            elif product == "GIFT_BASKET":
-                orders, gift_basket_trader_data = self.trade_baskets(state)
+            elif product == GIFT_BASKET:
+                orders = self.trade_baskets(state, trader_data)
                 for o in orders:
                     if o.symbol not in result:
                         result[o.symbol] = []
                     result[o.symbol].append(o)
-                trader_data.update(gift_basket_trader_data)
-            elif product == "COCONUT":
+
+            elif product == COCONUT:
                 orders: List[Order] = []
                 self.trade_coconuts(state, orders)
                 for o in orders:
@@ -611,8 +584,8 @@ class Trader:
 
     def trade_coconuts(self, state, orders):
         coconut_position = state.position.get(COCONUT, 0)
-        coconut_buy_orders = state.order_depths[COCONUT].buy_orders
-        coconut_sell_orders = state.order_depths[COCONUT].sell_orders
+        coconut_buy_orders = self.get_buy_orders(state, COCONUT)
+        coconut_sell_orders = self.get_sell_orders(state, COCONUT)
         sorted_coconut_bids = sorted(coconut_buy_orders.keys(), reverse=True)
         sorted_coconut_asks = sorted(coconut_sell_orders.keys())
         available_coconut_ask_qty = sum(q for a, q in coconut_sell_orders.items())
@@ -624,85 +597,59 @@ class Trader:
         coconut_midprice = (best_coconut_bid + best_coconut_ask) / 2
 
         coupon_position = state.position.get(COUPON, 0)
-        coupon_buy_orders = state.order_depths[COUPON].buy_orders
-        coupon_sell_orders = state.order_depths[COUPON].sell_orders
+        coupon_buy_orders = self.get_buy_orders(state, COUPON)
+        coupon_sell_orders = self.get_sell_orders(state, COUPON)
         sorted_coupon_bids = sorted(coupon_buy_orders.keys(), reverse=True)
         sorted_coupon_asks = sorted(coupon_sell_orders.keys())
         best_coupon_bid = sorted_coupon_bids[0] if sorted_coupon_bids else 0
         best_coupon_ask = sorted_coupon_asks[0] if sorted_coupon_asks else 999999
 
         coupon_delta = compute_coconut_coupon_delta(coconut_midprice)[1]
-        expected_coupon_price = (
-            coconut_midprice - COCONUT_FMV
-        ) * coupon_delta + COUPON_FMV
+        expected_coupon_price = (coconut_midprice - COCONUT_FMV) * coupon_delta + COUPON_FMV
 
         logger.print(f"Coconut midprice {coconut_midprice}")
         logger.print(f"Coupon delta {coupon_delta}")
         logger.print(f"Expected coupon price {expected_coupon_price}")
-        logger.print(
-            f"Best coupon bid {best_coupon_bid}, best coupon ask {best_coupon_ask}"
-        )
-        logger.print(
-            f"Best coconut bid {best_coconut_bid}, best coconut ask {best_coconut_ask}"
-        )
+        logger.print(f"Best coupon bid {best_coupon_bid}, best coupon ask {best_coupon_ask}")
+        logger.print(f"Best coconut bid {best_coconut_bid}, best coconut ask {best_coconut_ask}")
         logger.print(f"Coupon sell orders {coupon_sell_orders}")
         logger.print(f"Coupon buy orders {coupon_buy_orders}")
 
         coconut_trade_qty = 0
         coupon_trade_qty = 0
         coupon_price = 0
-        if (
-            best_coupon_bid - expected_coupon_price
-        ) / expected_coupon_price > COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
+        if (best_coupon_bid - expected_coupon_price) / expected_coupon_price > COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
             # Sell COUPON
             for b in sorted_coupon_bids:
-                if (
-                    b - expected_coupon_price
-                ) / expected_coupon_price > COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
+                if (b - expected_coupon_price) / expected_coupon_price > COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
                     coupon_trade_qty -= coupon_buy_orders[b]
                     coupon_price = b
 
-            coupon_trade_qty = max(
-                coupon_trade_qty, -POSITION_LIMITS[COUPON] - coupon_position
-            )
+            coupon_trade_qty = max(coupon_trade_qty, -POSITION_LIMITS[COUPON] - coupon_position)
             new_coupon_position = coupon_position + coupon_trade_qty  # -592
 
-            desired_coconut_position = int(
-                round(-new_coupon_position * coupon_delta)
-            )  # 322
+            desired_coconut_position = int(round(-new_coupon_position * coupon_delta))  # 322
             coconut_trade_qty = desired_coconut_position - coconut_position  # 23
-            if (
-                desired_coconut_position > POSITION_LIMITS[COCONUT]
-                or coconut_trade_qty > -available_coconut_ask_qty
-            ):
+            if desired_coconut_position > POSITION_LIMITS[COCONUT] or coconut_trade_qty > -available_coconut_ask_qty:
                 coconut_trade_qty = min(
                     POSITION_LIMITS[COCONUT] - coconut_position,
                     -available_coconut_ask_qty,
                 )
                 coupon_trade_qty = int(round(-(coconut_trade_qty / coupon_delta)))
 
-        elif (
-            best_coupon_ask - expected_coupon_price
-        ) / expected_coupon_price < -COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
+        elif (best_coupon_ask - expected_coupon_price) / expected_coupon_price < -COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
             # Buy COUPON
             for a in sorted_coupon_asks:
-                if (
-                    a - expected_coupon_price
-                ) / expected_coupon_price < -COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
+                if (a - expected_coupon_price) / expected_coupon_price < -COUPON_PRICE_TRADE_PERCENT_THRESHOLD:
                     coupon_trade_qty -= coupon_sell_orders[a]
                     coupon_price = a
 
-            coupon_trade_qty = min(
-                coupon_trade_qty, POSITION_LIMITS[COUPON] - coupon_position
-            )
+            coupon_trade_qty = min(coupon_trade_qty, POSITION_LIMITS[COUPON] - coupon_position)
             new_coupon_position = coupon_position + coupon_trade_qty
 
             desired_coconut_position = int(round(-new_coupon_position * coupon_delta))
             coconut_trade_qty = desired_coconut_position - coconut_position
-            if (
-                desired_coconut_position < -POSITION_LIMITS[COCONUT]
-                or coconut_trade_qty < -available_coconut_bid_qty
-            ):
+            if desired_coconut_position < -POSITION_LIMITS[COCONUT] or coconut_trade_qty < -available_coconut_bid_qty:
                 coconut_trade_qty = max(
                     -POSITION_LIMITS[COCONUT] - coconut_position,
                     -available_coconut_bid_qty,
@@ -722,34 +669,14 @@ class Trader:
         chocolateMidPrice = self.compute_mid_price(state, CHOCOLATE)
         strawberryMidPrice = self.compute_mid_price(state, STRAWBERRIES)
         roseMidPrice = self.compute_mid_price(state, ROSES)
-        return giftBasketMidPrice - (
-            chocolateMidPrice * GIFT_BASKET_CONTENTS[CHOCOLATE]
-            + strawberryMidPrice * GIFT_BASKET_CONTENTS[STRAWBERRIES]
-            + roseMidPrice * GIFT_BASKET_CONTENTS[ROSES]
-        )
+        return giftBasketMidPrice - (chocolateMidPrice * GIFT_BASKET_CONTENTS[CHOCOLATE] + strawberryMidPrice * GIFT_BASKET_CONTENTS[STRAWBERRIES] + roseMidPrice * GIFT_BASKET_CONTENTS[ROSES])
 
     def max_gift_baskets_to_buy(self, state: TradingState):
-        gift_baskets_for_sale = sum(
-            -ask_amount
-            for _, ask_amount in list(
-                state.order_depths[GIFT_BASKET].sell_orders.items()
-            )
-        )
+        gift_baskets_for_sale = sum(-ask_amount for _, ask_amount in list(self.get_sell_orders(state, GIFT_BASKET).items()))
 
-        strawberris_for_buy = sum(
-            bid_amount
-            for _, bid_amount in list(
-                state.order_depths[STRAWBERRIES].buy_orders.items()
-            )
-        )
-        chocolates_for_buy = sum(
-            bid_amount
-            for _, bid_amount in list(state.order_depths[CHOCOLATE].buy_orders.items())
-        )
-        roses_for_buy = sum(
-            bid_amount
-            for _, bid_amount in list(state.order_depths[ROSES].buy_orders.items())
-        )
+        strawberris_for_buy = sum(bid_amount for _, bid_amount in list(self.get_buy_orders(state, STRAWBERRIES).items()))
+        chocolates_for_buy = sum(bid_amount for _, bid_amount in list(self.get_buy_orders(state, CHOCOLATE).items()))
+        roses_for_buy = sum(bid_amount for _, bid_amount in list(self.get_buy_orders(state, ROSES).items()))
 
         return math.floor(
             min(
@@ -761,27 +688,11 @@ class Trader:
         )
 
     def max_gift_baskets_to_sell(self, state: TradingState):
-        gift_baskets_for_buy = sum(
-            bid_amount
-            for _, bid_amount in list(
-                state.order_depths[GIFT_BASKET].buy_orders.items()
-            )
-        )
+        gift_baskets_for_buy = sum(bid_amount for _, bid_amount in list(self.get_buy_orders(state, GIFT_BASKET).items()))
 
-        strawberris_for_sale = sum(
-            -ask_amount
-            for _, ask_amount in list(
-                state.order_depths[STRAWBERRIES].sell_orders.items()
-            )
-        )
-        chocolates_for_sale = sum(
-            -ask_amount
-            for _, ask_amount in list(state.order_depths[CHOCOLATE].sell_orders.items())
-        )
-        roses_for_sale = sum(
-            -ask_amount
-            for _, ask_amount in list(state.order_depths[ROSES].sell_orders.items())
-        )
+        strawberris_for_sale = sum(-ask_amount for _, ask_amount in list(self.get_sell_orders(state, STRAWBERRIES).items()))
+        chocolates_for_sale = sum(-ask_amount for _, ask_amount in list(self.get_sell_orders(state, CHOCOLATE).items()))
+        roses_for_sale = sum(-ask_amount for _, ask_amount in list(self.get_sell_orders(state, ROSES).items()))
 
         return math.floor(
             min(
@@ -792,9 +703,7 @@ class Trader:
             )
         )
 
-    def create_orders_for_gift_basket_trade(
-        self, state: TradingState, num_gift_baskets: int
-    ):
+    def create_orders_for_gift_basket_trade(self, state: TradingState, num_gift_baskets: int):
         if num_gift_baskets == 0:
             return []
 
@@ -803,9 +712,7 @@ class Trader:
             max_gift_baskets_to_buy = self.max_gift_baskets_to_buy(state)
             quantity = min(num_gift_baskets, max_gift_baskets_to_buy)
             quantity = max(1, int(quantity / BASKET_ORDER_SLOWING_FACTOR))
-            logger.print(
-                f"Buying {num_gift_baskets} gift baskets: qty={quantity}, price={self.compute_mid_price(state, GIFT_BASKET) + BASKET_PRICE_OFFSET}"
-            )
+            logger.print(f"Buying {num_gift_baskets} gift baskets: qty={quantity}, price={self.compute_mid_price(state, GIFT_BASKET) + BASKET_PRICE_OFFSET}")
 
             return [
                 Order(
@@ -834,9 +741,7 @@ class Trader:
         max_gift_baskets_to_sell = self.max_gift_baskets_to_sell(state)
         quantity = min(-num_gift_baskets, max_gift_baskets_to_sell)
         quantity = max(1, int(quantity / BASKET_ORDER_SLOWING_FACTOR))
-        logger.print(
-            f"Selling {num_gift_baskets} gift baskets: qty={quantity}, price={self.compute_mid_price(state, GIFT_BASKET) - BASKET_PRICE_OFFSET}"
-        )
+        logger.print(f"Selling {num_gift_baskets} gift baskets: qty={quantity}, price={self.compute_mid_price(state, GIFT_BASKET) - BASKET_PRICE_OFFSET}")
         return [
             Order(
                 GIFT_BASKET,
@@ -863,49 +768,60 @@ class Trader:
     def trade_baskets(self, state: TradingState, trader_data: dict[str, Any]):
         result = []
 
-        prev_avg_gift_basket_premium = trader_data.get("avg_gift_basket_premium", 379)
-        prev_count = trader_data.get("count", 1000)
+        # prev_count = trader_data.get("count", 0)
+        # prev_gift_basket_premiums = trader_data.get("gift_basket_premiums", [BASKET_PREMIUM_AVG] * BASKET_PREMIUM_WINDOW_SIZE)
+        # prev_avg_gift_basket_premium = trader_data.get("avg_gift_basket_premium", BASKET_PREMIUM_AVG)
+        # prev_std_gift_basket_premium = trader_data.get("std_gift_basket_premium", BASKET_PREMIUM_STD)
+        prev_avg_gift_basket_premium = BASKET_PREMIUM_AVG
+        prev_std_gift_basket_premium = BASKET_PREMIUM_STD
 
         gift_basket_pos = state.position.get(GIFT_BASKET, 0)
         real_premium = self.compute_gift_basket_premium(state)
 
-        if prev_avg_gift_basket_premium is not None:
-            pct_change = (
-                real_premium - prev_avg_gift_basket_premium
-            ) / prev_avg_gift_basket_premium
-            logger.print(
-                f"Real premium: {real_premium}, avg premium: {prev_avg_gift_basket_premium}, pct_change: {pct_change}"
-            )
+        # pct_change = (real_premium - prev_avg_gift_basket_premium) / prev_avg_gift_basket_premium
+        pct_deviation = (real_premium - prev_avg_gift_basket_premium) / prev_std_gift_basket_premium
 
-            if pct_change > BASKET_PRICE_PERCENT_THRESHOLD:
-                # Sell as many as possible
-                logger.print("Sell as many as possible")
-                result = self.create_orders_for_gift_basket_trade(
-                    state, -POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos
-                )
-            elif pct_change < -BASKET_PRICE_PERCENT_THRESHOLD:
-                # Buy as many as possible
-                logger.print("Buy as many as possible")
-                result = self.create_orders_for_gift_basket_trade(
-                    state, POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos
-                )
+        logger.print(f"Gift Basket premium: {real_premium}")
+        logger.print(f"Gift Basket avg premium: {prev_avg_gift_basket_premium}")
+        logger.print(f"Gift Basket std premium: {prev_std_gift_basket_premium}")
+        logger.print(f"Gift Basket premium pct deviation: {pct_deviation}")
+        logger.print(f"Gift Basket current position: {gift_basket_pos}")
 
-        new_count = prev_count + 1
-        new_avg_gift_basket_premium = (
-            prev_avg_gift_basket_premium
-            if prev_avg_gift_basket_premium is not None
-            else 0
-        )
-        new_avg_gift_basket_premium = (
-            (new_avg_gift_basket_premium * prev_count) + real_premium
-        ) / new_count
+        if pct_deviation >= BASKET_PRICE_STD_THRESHOLD:
+            # Sell as many as possible
+            logger.print("Sell as many as possible")
+            result = self.create_orders_for_gift_basket_trade(state, -POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos)
+        elif pct_deviation <= -BASKET_PRICE_STD_THRESHOLD:
+            # Buy as many as possible
+            logger.print("Buy as many as possible")
+            result = self.create_orders_for_gift_basket_trade(state, POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos)
 
-        trader_data = {
-            "avg_gift_basket_premium": new_avg_gift_basket_premium,
-            "count": new_count,
-            "real_premium": real_premium,
-        }
-        return result, trader_data
+        # desired_position = -POSITION_LIMITS[GIFT_BASKET] * pct_deviation
+        # result = self.create_orders_for_gift_basket_trade(state, desired_position - gift_basket_pos)
+
+        # if pct_change > BASKET_PRICE_PERCENT_THRESHOLD:
+        #     # Sell as many as possible
+        #     logger.print("Sell as many as possible")
+        #     result = self.create_orders_for_gift_basket_trade(state, -POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos)
+        # elif pct_change < -BASKET_PRICE_PERCENT_THRESHOLD:
+        #     # Buy as many as possible
+        #     logger.print("Buy as many as possible")
+        #     result = self.create_orders_for_gift_basket_trade(state, POSITION_LIMITS[GIFT_BASKET] - gift_basket_pos)
+
+        # new_gift_basket_premiums = prev_gift_basket_premiums[1:] + [real_premium]
+        # new_avg_gift_basket_premium = sum(new_gift_basket_premiums) / len(new_gift_basket_premiums)
+        # new_std_gift_basket_premium = np.std(new_gift_basket_premiums) if prev_count >= BASKET_PREMIUM_WINDOW_SIZE else BASKET_PREMIUM_STD
+
+        # trader_data.update(
+        #     {
+        #         "count": prev_count + 1,
+        #         "avg_gift_basket_premium": new_avg_gift_basket_premium,
+        #         "std_gift_basket_premium": new_std_gift_basket_premium,
+        #         "gift_basket_premiums": new_gift_basket_premiums,
+        #         "real_premium": real_premium,
+        #     }
+        # )
+        return result
 
     def trade_orchids(self, state, orders):
         product = "ORCHIDS"
@@ -916,9 +832,7 @@ class Trader:
             self.conversions += -current_position
 
         if current_position == 0:
-            logger.print(
-                "We bought ORCHIDS from other island, now looking to sell again"
-            )
+            logger.print("We bought ORCHIDS from other island, now looking to sell again")
         observations = state.observations.conversionObservations.get(product, None)
         if observations is None:
             return []
@@ -929,8 +843,8 @@ class Trader:
         transport_fees = observations.transportFees
         sunlight = observations.sunlight
         humidity = observations.humidity
-        buy_orders = state.order_depths[product].buy_orders
-        sell_orders = state.order_depths[product].sell_orders
+        buy_orders = self.get_buy_orders(state, product)
+        sell_orders = self.get_sell_orders(state, product)
         best_bid = max(buy_orders.keys())
         best_ask = min(sell_orders.keys())
 
@@ -956,42 +870,29 @@ class Trader:
         logger.print("Buying ORCHIDS in own island at", buy_price)
         orders.append(Order(product, buy_price, 100))
 
-    def process_neutral_trades(
-        self, order_depth, product, orders, midpoint, current_position
-    ):
+    def process_neutral_trades(self, order_depth, product, orders, midpoint, current_position):
         """Specific processing for product to neutralize position at the midpoint."""
         # Neutralizing strategy at the midpoint of 10000
         if midpoint in order_depth.sell_orders and current_position < 0:
             # Neutralize negative position
             neutralize_quantity = -order_depth.sell_orders[midpoint]
-            if current_position < 0 and current_position + neutralize_quantity < abs(
-                current_position
-            ):
+            if current_position < 0 and current_position + neutralize_quantity < abs(current_position):
                 orders.append(Order(product, midpoint, neutralize_quantity))
-                logger.print(
-                    "Neutralizing buy", neutralize_quantity, "product at midpoint"
-                )
+                logger.print("Neutralizing buy", neutralize_quantity, "product at midpoint")
                 self.buys += neutralize_quantity
                 current_position += neutralize_quantity
 
         if midpoint in order_depth.buy_orders and current_position > 0:
             # Neutralize positive position
             neutralize_quantity = order_depth.buy_orders[midpoint]
-            if (
-                current_position > 0
-                and abs(current_position - neutralize_quantity) < current_position
-            ):
+            if current_position > 0 and abs(current_position - neutralize_quantity) < current_position:
                 orders.append(Order(product, midpoint, -neutralize_quantity))
-                logger.print(
-                    "Neutralizing sell", neutralize_quantity, "product at midpoint"
-                )
+                logger.print("Neutralizing sell", neutralize_quantity, "product at midpoint")
                 self.sells += neutralize_quantity
                 current_position -= neutralize_quantity
         return current_position
 
-    def process_market_trades(
-        self, order_depth, orders, midpoint, current_position, position_limit, product
-    ):
+    def process_market_trades(self, order_depth, orders, midpoint, current_position, position_limit, product):
         """Generic market trade processing for all products."""
         # Buy below the midpoint
         for price, quantity in sorted(order_depth.sell_orders.items()):
