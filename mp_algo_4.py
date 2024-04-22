@@ -222,7 +222,7 @@ class Trader:
         coupon_mid_price = (best_coupon_ask + best_coupon_bid) / 2
 
         converted_coconut_mid_price = self.convert_coconut(coconut_mid_price)
-        action_threshold = 4 #Difference in prices signaling to take action
+        action_threshold = 5 #Difference in prices signaling to take action
         neutralize_threshold = 1 #Difference in prices signaling to neutralize position
         coupon_limit = 600
         coconut_limit = 300
