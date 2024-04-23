@@ -480,7 +480,7 @@ class Trader:
         result = {}
         self.conversions = 0
         trader_data = json.loads(state.traderData) if state.traderData else {}
-
+        logger.print(state.own_trades)
         for product in ["AMETHYSTS", "STARFRUIT", "ORCHIDS", "GIFT_BASKET", COCONUT]:
             if product == "ORCHIDS":
                 orders: List[Order] = []
