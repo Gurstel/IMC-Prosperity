@@ -1,4 +1,4 @@
-This is Cove Capital's repository for IMC Prosperity 2. We placed #[TBD] out of [TBD] teams internationally, and #[TBD] in the United States. Below is a breakdown of our strategies and thoughts when approaching this challenge:
+This is Cove Capital's repository for IMC Prosperity 2. We placed #7 out of 3,200 teams internationally, and #3 in the United States. Below is a breakdown of our strategies and thoughts when approaching this challenge:
 ##########################################
 
 `ROUND 1`:
@@ -147,7 +147,7 @@ Reading this, if you were trading the PS6, you would probably not make a bet bec
 
 So we jsut decided to individually write down how we thought each product would move, took the average, and put that down for our answer.
 
-At the end of `ROUND 5` (and the end of the challenge) we were #[TBD] overall
+At the end of `ROUND 5` (and the end of the challenge) we were #7 overall
 
 
 Here are some memes we made during the challenge:
