@@ -1,4 +1,4 @@
-This is Cove Capital's repository for IMC Prosperity 2. We placed #7 out of 3,200 teams internationally, and #3 in the United States. Below is a breakdown of our strategies and thoughts when approaching this challenge:
+This is Cove Capital's repository for IMC Prosperity 2. We placed #7 out of 9,000+ teams internationally, and #3 in the United States. Below is a breakdown of our strategies and thoughts when approaching this challenge:
 ##########################################
 
 `ROUND 1`:
